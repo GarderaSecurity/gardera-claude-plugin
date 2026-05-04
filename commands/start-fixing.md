@@ -27,9 +27,9 @@ Wait for the reply. Branch on the answer:
 
 ### Branch B — "repo"
 
-1. Ask: `Repo name to search for? (substring is fine — e.g. "backend". Press Enter for the busiest repos.)`
+1. Ask: `Repo name to search for? (substring like "backend", or type "all" to browse the repos with the most open findings.)`
 2. Wait for input. Call `list_repositories` with:
-   - `search`: the developer's input (omit if they pressed Enter)
+   - `search`: the developer's input (omit if they typed "all" or just whitespace)
    - `status`: `"active"`
    - `limit`: 50
    The result includes `total_findings`, `critical`, `high`, `medium`, `low`, and `over_sla` per repo.
@@ -52,9 +52,9 @@ If the developer typed something else (e.g. a name directly), interpret generous
 
 ## Step 1: Resolve workspace location
 
-Check user memory for an entry titled "User's workspace location" with a path like `~/src/` or `~/code/`. If present, use it.
+Check user memory for an entry titled "User's workspace location" with a path like `~/src/` or `~/code/`. If present, use it silently, no need to mention it.
 
-If absent, ask once: `Where do you keep cloned repos? (e.g. ~/src/, ~/code/)`. Save the answer to user memory.
+If absent, ask once with context: `To apply fixes I'll need to clone any affected repos that aren't already on your machine, and run edits + git commits in the local copies. Where do you keep cloned repos? (e.g. ~/src/, ~/code/)`. Then save the answer to user memory.
 
 ## Step 2: Fetch the top 5 findings (ranked by priority score)
 
