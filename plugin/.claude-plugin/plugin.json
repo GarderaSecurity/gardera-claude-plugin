@@ -1,0 +1,8 @@
+{
+  "name": "gardera",
+  "version": "0.1.0",
+  "description": "Gardera security tools for Claude Code.",
+  "author": {
+    "name": "Gardera Security"
+  }
+}

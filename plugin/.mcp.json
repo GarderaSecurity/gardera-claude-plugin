@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gardera": {
+      "type": "http",
+      "url": "https://mcp.gardera.io/mcp"
+    }
+  }
+}

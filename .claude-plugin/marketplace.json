@@ -1,0 +1,13 @@
+{
+  "name": "gardera",
+  "owner": {
+    "name": "Gardera Security"
+  },
+  "plugins": [
+    {
+      "name": "gardera",
+      "source": "./plugin",
+      "description": "Gardera security tools for Claude Code."
+    }
+  ]
+}
