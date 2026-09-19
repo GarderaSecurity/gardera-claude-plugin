@@ -2,7 +2,10 @@
   "mcpServers": {
     "gardera": {
       "type": "http",
-      "url": "https://mcp.gardera.io/mcp"
+      "url": "https://mcp.gardera.io/mcp",
+      "headers": {
+        "X-Gardera-Client": "claude-code-plugin/0.1.0"
+      }
     }
   }
 }
