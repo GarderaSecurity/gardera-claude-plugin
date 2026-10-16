@@ -23,30 +23,33 @@ Every confirmation point in this command is an `AskUserQuestion` call, never a f
 Gardera's `list_repositories` / `get_repositories` return no clone URL, but everything needed is in two fields:
 
 - `id` has the shape `<provider>:<org>:<opaque>`, e.g. `bitbucket:nuvo-finance:{64633d0d-…}` or `github:acme:12345`. The first segment is the SCM provider (`github`, `gitlab`, `bitbucket`, `azuredevops`), the second is the org / workspace / group.
-- `name` is `<org>/<slug>` (GitLab may have more path segments for subgroups). The last segment is the `<slug>`.
+- `name` is `<org>/<slug>` for `github`, `gitlab` and `bitbucket` (GitLab may have more path segments for subgroups). For `azuredevops` it is `<project>/<repo>`; the Azure DevOps org is only in the `id`. The last segment is the `<slug>`.
 - `default_branch` is the PR target.
 
-Derived values:
+Derived values (`<org>` is the second segment of `id`):
 
 | provider | clone URL (HTTPS) | clone URL (SSH) | local path |
 |---|---|---|---|
 | github | `https://github.com/<name>.git` | `git@github.com:<name>.git` | `<workspace>/<slug>` |
 | gitlab | `https://gitlab.com/<name>.git` | `git@gitlab.com:<name>.git` | `<workspace>/<slug>` |
 | bitbucket | `https://bitbucket.org/<name>.git` | `git@bitbucket.org:<name>.git` | `<workspace>/<slug>` |
-| azuredevops | ask the developer for the clone URL | | `<workspace>/<slug>` |
+| azuredevops | `https://dev.azure.com/<org>/<project>/_git/<repo>` | `git@ssh.dev.azure.com:v3/<org>/<project>/<repo>` | `<workspace>/<slug>` |
 
-Pick HTTPS or SSH by looking at the sibling clones already in `<workspace>`: run `git -C <workspace>/<any-sibling> remote get-url origin` and match its scheme. With no siblings, use HTTPS. For self-hosted instances (the developer's siblings point at a host other than the public one), reuse the sibling host.
+Pick HTTPS or SSH by looking at the sibling clones already in `<workspace>`: run `git -C <workspace>/<any-sibling> remote get-url origin` and match its scheme (a `git@…:` or `ssh://` remote means SSH). With no siblings, use HTTPS. For self-hosted instances (the developer's siblings for the same provider point at a host other than the public one), reuse the sibling host. Never carry a host across providers: an `ssh.dev.azure.com` sibling says nothing about a Bitbucket clone.
 
 The local checkout is always `<workspace>/<slug>`, never `<workspace>/<org>/<slug>`.
 
 ### Hosting detection for pushes and PRs
 
-The push/PR host is whatever the local clone's `origin` points at, which may differ from the provider Gardera recorded. Always run `git -C <path> remote get-url origin` and classify by hostname:
+The push/PR host is whatever the local clone's `origin` points at, which may differ from the provider Gardera recorded. Always run `git -C <path> remote get-url origin` and classify by hostname. Read the hostname from either remote form: `https://[<user>@]<host>/<path>` (drop the `<user>@` part, so `https://jane@bitbucket.org/acme/app.git` and `https://acme@dev.azure.com/acme/proj/_git/app` classify by `bitbucket.org` and `dev.azure.com`) or the scp-like `[<user>@]<host>:<path>` (so `git@bitbucket.org:acme/app.git` is `bitbucket.org` and `git@ssh.dev.azure.com:v3/acme/proj/app` is `ssh.dev.azure.com`):
 
 - `github.com` → GitHub flow
 - `bitbucket.org` → Bitbucket Cloud flow
 - `gitlab.com` → GitLab flow
-- anything else (self-hosted GitHub Enterprise, GitLab, Bitbucket Data Center, Azure DevOps) → generic flow
+- `dev.azure.com`, `ssh.dev.azure.com`, `<org>.visualstudio.com`, `vs-ssh.visualstudio.com` → Azure DevOps flow
+- anything else (self-hosted GitHub Enterprise, GitLab, Bitbucket Data Center) → generic flow
+
+Take `<org>`, `<project>` and `<slug>` for the PR flows from the origin URL path, not from the Gardera name, in case they differ: strip a trailing `.git`; for Azure DevOps the path is `<org>/<project>/_git/<repo>` (HTTPS) or `v3/<org>/<project>/<repo>` (SSH), and on a `<org>.visualstudio.com` host the org is the host prefix and the path is `<project>/_git/<repo>`.
 
 If there is no `origin` at all, report `no_remote` for that repo and do not attempt a push.
 
@@ -197,7 +200,7 @@ After Step 4.5, in-scope findings group by repo: code findings by their existing
 
 Spawn ONE subagent per repo with in-scope findings. Issue all `Agent` tool calls in a SINGLE message so they run concurrently. Use `subagent_type: "general-purpose"`. Do not use worktree isolation, the subagent must operate on the actual local clone.
 
-Before spawning subagents, for every repo not yet cloned at `<workspace>/<slug>`, ask once with a single multi-select menu: `These repos aren't cloned yet. Clone which?` One option per missing repo (label `<slug>`, description `<clone URL>`), chunked per the multi-select rule; say in the question text that cloning all of them is the recommendation. For each selected repo the main session runs `git clone <clone-url> <workspace>/<slug>` (URL derived per *Repository identity*; for `azuredevops` or any provider whose URL can't be derived, ask for the clone URL via Other) BEFORE spawning that repo's subagent. If the clone fails, surface the git error and mark the repo `clone_failed`. For repos not selected, do not spawn a subagent; note them as `repo_not_cloned` in the Step 6 summary.
+Before spawning subagents, for every repo not yet cloned at `<workspace>/<slug>`, ask once with a single multi-select menu: `These repos aren't cloned yet. Clone which?` One option per missing repo (label `<slug>`, description `<clone URL>`), chunked per the multi-select rule; say in the question text that cloning all of them is the recommendation. For each selected repo the main session runs `git clone <clone-url> <workspace>/<slug>` (URL derived per *Repository identity*; only when it can't be derived, ask for the clone URL via Other) BEFORE spawning that repo's subagent. If the clone fails, surface the git error and mark the repo `clone_failed`. For repos not selected, do not spawn a subagent; note them as `repo_not_cloned` in the Step 6 summary.
 
 Each subagent receives a self-contained brief. Subagents do not share conversation context with the main session, so the brief must include all data the subagent will need.
 
@@ -261,7 +264,7 @@ Violated controls:
    - Else BASE = `HEAD`, and add a note `base: HEAD (default branch <default_branch> not found locally)`.
    Do not run `git fetch`; work with what is local.
 3. Pick a branch name. Start with `<branch-name>`. If `git rev-parse --verify <branch-name>` succeeds (the branch already exists, locally or as a remote-tracking ref), append a numeric suffix and try again: `<branch-name>-2`, `<branch-name>-3`, etc., until you find one that doesn't exist. Then run `git checkout -b <final-branch-name> <BASE>`. Use the final name in your return report.
-4. Verify baseline. Determine VERIFY_CMD: a typecheck or lint command that already runs in this repo in under 30 seconds, found in `package.json` scripts, `pyproject.toml`, `Makefile`, or the CI config (`.github/workflows/*.yml`, `bitbucket-pipelines.yml`, `.gitlab-ci.yml`). Use it only if its tool is already available (on PATH, in the project's `node_modules/.bin`, `.venv/bin`, or equivalent). Never install a linter or formatter to run verify. If no such command exists or its tool is missing, VERIFY_CMD is empty and verify is `skipped`. Otherwise run VERIFY_CMD once now, before any edit, and save its exit code and output as BASELINE.
+4. Verify baseline. Determine VERIFY_CMD: a typecheck or lint command that already runs in this repo in under 30 seconds, found in `package.json` scripts, `pyproject.toml`, `Makefile`, or the CI config (`.github/workflows/*.yml`, `bitbucket-pipelines.yml`, `.gitlab-ci.yml`, `azure-pipelines.yml`). Use it only if its tool is already available (on PATH, in the project's `node_modules/.bin`, `.venv/bin`, or equivalent). Never install a linter or formatter to run verify. If no such command exists or its tool is missing, VERIFY_CMD is empty and verify is `skipped`. Otherwise run VERIFY_CMD once now, before any edit, and save its exit code and output as BASELINE.
 5. For each finding above, apply the fix and commit (one commit per finding):
    - Dependency: Edit the manifest to change `<package_version>` → `<suggested_fix_version>`. Then regenerate the lockfile via Bash (`npm install`, `pip install -r requirements.txt`, `cargo update -p <pkg>`, `go mod tidy`, whichever applies). If lockfile regeneration fails, revert the edit, do not commit, mark this finding `lockfile_failure` with the Bash error, and continue.
    - IaC / Code: open the file, locate the original code from `Original code` at `<start_line>–<end_line>`, apply the change implied by `Remediation`. Preserve indentation and surrounding context.
@@ -343,9 +346,10 @@ Ask once with a menu: `Open PRs for these branches?` Options: `Yes, all <N>`, `N
      Title: the first commit's subject line when there is one commit, otherwise `fix: address <N> Gardera findings`.
   4. Create the PR by host:
      - **GitHub** (`github.com`): `gh pr create --base <default_branch> --head <branch> --title <title> --body <body>`. If `gh` is missing or `gh auth status` fails, fall back to the generic flow.
-     - **Bitbucket Cloud** (`bitbucket.org`): if an Atlassian MCP server is available in this session (look for tools that expose Bitbucket operations, e.g. a `discover` tool that returns `createBitbucketRepoPullRequest` runnable via `executeWrite`), call it with `workspaceId: <org>`, `repoId: <slug>`, `sourceBranch: <branch>`, `targetBranch: <default_branch>`, `title`, `description: <body>`. Take `<org>` and `<slug>` from the origin URL path, not from the Gardera name, in case they differ. Otherwise fall back to the generic flow.
+     - **Bitbucket Cloud** (`bitbucket.org`): if an Atlassian MCP server is available in this session (look for tools that expose Bitbucket operations, e.g. a `discover` tool that returns `createBitbucketRepoPullRequest` runnable via `executeWrite`), call it with `workspaceId: <org>`, `repoId: <slug>`, `sourceBranch: <branch>`, `targetBranch: <default_branch>`, `title`, `description: <body>`, with `<org>` and `<slug>` parsed from the origin URL per *Hosting detection*. Otherwise fall back to the generic flow.
      - **GitLab** (`gitlab.com`): `glab mr create --source-branch <branch> --target-branch <default_branch> --title <title> --description <body> --yes` if `glab` is installed and authenticated; otherwise generic flow.
-     - **Generic** (everything else, or any CLI/MCP failure above): print the "create pull request" URL from the push output if git printed one (GitHub, Bitbucket and GitLab all do). If it did not, build it: GitHub `https://<host>/<org>/<slug>/compare/<default_branch>...<branch>?expand=1`, Bitbucket Cloud `https://bitbucket.org/<org>/<slug>/pull-requests/new?source=<branch>&t=1`, Bitbucket Data Center `https://<host>/projects/<PROJECT>/repos/<slug>/pull-requests?create&sourceBranch=refs/heads/<branch>`, GitLab `https://<host>/<path>/-/merge_requests/new?merge_request[source_branch]=<branch>`. Then print the composed title and body in a fenced block so the developer can paste it.
+     - **Azure DevOps** (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`): `az repos pr create --org https://dev.azure.com/<org> -p <project> -r <repo> -s <branch> -t <default_branch> --title <title> --description <body>` if `az` is installed with the `azure-devops` extension (`az extension show -n azure-devops` succeeds) and signed in (`az account show` succeeds), with `<org>`, `<project>` and `<repo>` parsed from the origin URL per *Hosting detection*. Otherwise fall back to the generic flow.
+     - **Generic** (everything else, or any CLI/MCP failure above): print the "create pull request" URL from the push output if git printed one (most hosts do). If it did not, build it: GitHub `https://<host>/<org>/<slug>/compare/<default_branch>...<branch>?expand=1`, Bitbucket Cloud `https://bitbucket.org/<org>/<slug>/pull-requests/new?source=<branch>&t=1`, Bitbucket Data Center `https://<host>/projects/<PROJECT>/repos/<slug>/pull-requests?create&sourceBranch=refs/heads/<branch>`, GitLab `https://<host>/<path>/-/merge_requests/new?merge_request[source_branch]=<branch>`, Azure DevOps `https://dev.azure.com/<org>/<project>/_git/<repo>/pullrequestcreate?sourceRef=<branch>&targetRef=<default_branch>`. Then print the composed title and body in a fenced block so the developer can paste it.
   5. Output each resulting PR URL, or the create-PR link plus the pasted body for the generic flow.
 
 If any step fails for a branch, leave the branch committed locally, surface the error, and continue with the rest. Never retry a failed push or PR creation automatically.
